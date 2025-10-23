@@ -56,4 +56,3 @@
     - name: Display DC information
       ansible.builtin.debug:
         msg: "{{ dc_info.stdout_lines }}"
-
