@@ -52,7 +52,7 @@
     - name: Ensure VM is running
       ansible.builtin.command: virsh start {{ vm_name }}
       register: vm_start
-      failed_when: 
+      failed_when:
         - vm_start.rc != 0
         - "'already active' not in vm_start.stderr"
       changed_when: "'already active' not in vm_start.stderr"
