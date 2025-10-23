@@ -1,0 +1,52 @@
+---
+- name: Deploy lab networks, VyOS, Linux, Windows, and Docker Compose VM
+  hosts: laptop
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Deploy lab networks
+      import_playbook: deploy-networks.yml
+
+    - name: Deploy VyOS router
+      import_playbook: deploy-vyos-vm.yml
+
+    - name: Deploy Linux VMs
+      import_playbook: deploy-linux-vm.yml
+      loop: "{{ linux_vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Deploy Windows VMs
+      import_playbook: deploy-windows-vm.yml
+      loop: "{{ windows_vms }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Deploy Docker Compose VM
+      import_playbook: deploy-docker-compose.yml
+
+    - name: Detect dynamic IPs for all VMs
+      vars:
+        vm_list: "{{ linux_vms + [docker_compose_vm] }}"
+      block:
+        - name: Get VM IP address
+          shell: "virsh domifaddr {{ item.name }} --source agent | awk '/ipv4/ {print $4}' | cut -d'/' -f1"
+          register: vm_ip
+          retries: 10
+          delay: 10
+          until: vm_ip.stdout != ''
+          loop: "{{ vm_list }}"
+          loop_control:
+            loop_var: item
+
+        - name: Add VM to Ansible inventory dynamically
+          add_host:
+            name: "{{ item.item.name }}"
+            ansible_host: "{{ item.stdout }}"
+            ansible_user: "{{ default_user }}"
+            ansible_ssh_private_key_file: "~/.ssh/id_ed25519"
+          loop: "{{ vm_ip.results }}"
+          loop_control:
+            loop_var: item

@@ -1,0 +1,31 @@
+default_user: mike
+ssh_public_keys:
+  - "~/.ssh/id_ed25519.pub"
+
+docker_compose_vm:
+  name: "docker-compose-server"
+  memory: 4096
+  vcpus: 2
+  disk: 20G
+  network: "lab-net"
+
+linux_vm:
+  name: "linux-test"
+  memory: 2048
+  vcpus: 2
+  disk: 15G
+  network: "linux-net"
+
+windows_vm:
+  name: "win-test"
+  memory: 4096
+  vcpus: 2
+  disk: 40G
+  network: "windows-net"
+  iso_path: "/isos/Win11.iso"
+
+k8s_nodes:
+  - { name: "k8s-control", memory: 3072, vcpus: 2, disk: 20G, network: "k8s-net" }
+  - { name: "k8s-worker1", memory: 2048, vcpus: 2, disk: 15G, network: "k8s-net" }
+  - { name: "k8s-worker2", memory: 2048, vcpus: 2, disk: 15G, network: "k8s-net" }
+

@@ -1,0 +1,166 @@
+---
+- name: Create cloud-init user-data on Pi for {{ node.name }}
+  delegate_to: localhost
+  become: false
+  ansible.builtin.copy:
+    dest: "/tmp/user-data-{{ node.name }}"
+    mode: '0644'
+    content: |
+      #cloud-config
+      hostname: {{ node.name }}
+      users:
+        - name: mike
+          sudo: ALL=(ALL) NOPASSWD:ALL
+          shell: /bin/bash
+          plain_text_passwd: 'temppass123'
+          lock_passwd: false
+          ssh_authorized_keys:
+            - {{ lookup('file', ssh_public_key) }}
+
+      package_update: true
+      packages:
+        - curl
+        - apt-transport-https
+        - ca-certificates
+        - software-properties-common
+        - containerd
+        - htop
+        - vim
+
+      runcmd:
+        - swapoff -a
+        - sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+        - modprobe overlay
+        - modprobe br_netfilter
+        - echo "overlay" >> /etc/modules-load.d/k8s.conf
+        - echo "br_netfilter" >> /etc/modules-load.d/k8s.conf
+        - sysctl -w net.bridge.bridge-nf-call-iptables=1
+        - sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+        - sysctl -w net.ipv4.ip_forward=1
+        - mkdir -p /etc/sysctl.d
+        - echo "net.bridge.bridge-nf-call-iptables=1" >> /etc/sysctl.d/k8s.conf
+        - echo "net.bridge.bridge-nf-call-ip6tables=1" >> /etc/sysctl.d/k8s.conf
+        - echo "net.ipv4.ip_forward=1" >> /etc/sysctl.d/k8s.conf
+        - mkdir -p /etc/containerd
+        - containerd config default > /etc/containerd/config.toml
+        - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+        - systemctl restart containerd
+        - systemctl enable containerd
+
+- name: Create cloud-init meta-data on Pi for {{ node.name }}
+  delegate_to: localhost
+  become: false
+  ansible.builtin.copy:
+    dest: "/tmp/meta-data-{{ node.name }}"
+    mode: '0644'
+    content: |
+      instance-id: {{ node.name }}-{{ ansible_date_time.epoch }}
+      local-hostname: {{ node.name }}
+
+- name: Create cloud-init network-config on Pi for {{ node.name }}
+  delegate_to: localhost
+  become: false
+  ansible.builtin.copy:
+    dest: "/tmp/network-config-{{ node.name }}"
+    mode: '0644'
+    content: |
+      version: 2
+      ethernets:
+        enp1s0:
+          dhcp4: true
+
+- name: Create cloud-init seed disk on Pi for {{ node.name }}
+  delegate_to: localhost
+  become: false
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      rm -f /tmp/cloud-init-{{ node.name }}.img
+      dd if=/dev/zero of=/tmp/cloud-init-{{ node.name }}.img bs=1M count=1 2>/dev/null
+      mkfs.vfat -n cidata /tmp/cloud-init-{{ node.name }}.img >/dev/null 2>&1
+      mkdir -p /tmp/cloud-init-mount-{{ node.name }}
+      sudo mount -o loop /tmp/cloud-init-{{ node.name }}.img /tmp/cloud-init-mount-{{ node.name }}
+      sudo cp /tmp/user-data-{{ node.name }} /tmp/cloud-init-mount-{{ node.name }}/user-data
+      sudo cp /tmp/meta-data-{{ node.name }} /tmp/cloud-init-mount-{{ node.name }}/meta-data
+      sudo cp /tmp/network-config-{{ node.name }} /tmp/cloud-init-mount-{{ node.name }}/network-config
+      sudo umount /tmp/cloud-init-mount-{{ node.name }}
+      rmdir /tmp/cloud-init-mount-{{ node.name }}
+    executable: /bin/bash
+  changed_when: true
+
+- name: Copy seed disk to laptop for {{ node.name }}
+  ansible.builtin.copy:
+    src: /tmp/cloud-init-{{ node.name }}.img
+    dest: /tmp/cloud-init-{{ node.name }}.img
+    mode: '0644'
+
+- name: Remove old VM if exists for {{ node.name }}
+  ansible.builtin.shell:
+    cmd: |
+      /usr/bin/virsh destroy {{ node.name }} 2>/dev/null || true
+      /usr/bin/virsh undefine {{ node.name }} --remove-all-storage 2>/dev/null || true
+  changed_when: false
+  failed_when: false
+
+- name: Create VM disk for {{ node.name }}
+  ansible.builtin.command:
+    cmd: /usr/bin/cp /tmp/ubuntu-20.04-cloudimg.img /var/lib/libvirt/images/{{ node.name }}.qcow2
+  changed_when: true
+
+- name: Resize VM disk for {{ node.name }}
+  ansible.builtin.command:
+    cmd: /usr/bin/qemu-img resize /var/lib/libvirt/images/{{ node.name }}.qcow2 {{ node.disk }}
+  changed_when: true
+
+- name: Create VM for {{ node.name }}
+  ansible.builtin.shell:
+    cmd: |
+      /usr/bin/virt-install \
+        --name {{ node.name }} \
+        --ram {{ node.memory }} \
+        --vcpus {{ node.vcpus }} \
+        --disk path=/var/lib/libvirt/images/{{ node.name }}.qcow2,format=qcow2,bus=virtio \
+        --disk path=/tmp/cloud-init-{{ node.name }}.img,device=disk,bus=virtio \
+        --network network={{ network }},model=virtio \
+        --os-variant ubuntu20.04 \
+        --graphics none \
+        --import \
+        --noautoconsole
+  changed_when: true
+
+- name: Wait for VM to start for {{ node.name }}
+  ansible.builtin.shell:
+    cmd: set -o pipefail && /usr/bin/virsh list --state-running | grep '{{ node.name }}'
+    executable: /bin/bash
+  register: vm_running
+  retries: 15
+  delay: 5
+  until: vm_running.rc == 0
+  changed_when: false
+
+- name: Get vnet interface for {{ node.name }}
+  ansible.builtin.shell:
+    cmd: set -o pipefail && /usr/bin/virsh domiflist {{ node.name }} | awk '/{{ network }}/ {print $1}'
+    executable: /bin/bash
+  register: vm_vnet
+  changed_when: false
+
+- name: Attach vnet to bridge for {{ node.name }}
+  ansible.builtin.command:
+    cmd: /usr/sbin/brctl addif {{ bridge }} {{ vm_vnet.stdout }}
+  failed_when: false
+  changed_when: false
+
+- name: Verify bridge connection for {{ node.name }}
+  ansible.builtin.shell:
+    cmd: set -o pipefail && /usr/sbin/brctl show {{ bridge }} | grep {{ vm_vnet.stdout }}
+    executable: /bin/bash
+  register: bridge_check
+  retries: 5
+  delay: 2
+  until: bridge_check.rc == 0
+  changed_when: false
+
+- name: Display deployment status for {{ node.name }}
+  ansible.builtin.debug:
+    msg: "{{ node.name }} deployed successfully"

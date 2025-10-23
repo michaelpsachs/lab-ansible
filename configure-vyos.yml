@@ -1,0 +1,25 @@
+---
+- name: Configure VyOS Router
+  hosts: vyos-router
+  gather_facts: false
+  connection: network_cli
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Configure hostname
+      vyos.vyos.vyos_config:
+        lines:
+          - set system host-name vyos-router
+
+    - name: Configure LAN interface
+      vyos.vyos.vyos_config:
+        lines:
+          - set interfaces ethernet eth0 address 192.168.1.101/24
+          - set system gateway-address 192.168.1.1
+          - set system name-server 8.8.8.8
+          - set system login user vyos authentication plaintext-password 'vyos123'
+          - set system login user vyos level admin
+
+    - name: Commit and save configuration
+      vyos.vyos.vyos_config:
+        save: true

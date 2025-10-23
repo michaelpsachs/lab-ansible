@@ -1,0 +1,38 @@
+---
+- name: Create lab networks on KVM
+  hosts: laptop
+  become: yes
+  gather_facts: false
+  vars:
+    lab_networks:
+      - { name: "lab-net", bridge: "virbr1", subnet: "172.16.0.0", netmask: "255.255.0.0", dhcp_start: "172.16.0.10", dhcp_end: "172.16.0.254" }
+      - { name: "k8s-net", bridge: "virbr2", subnet: "172.17.0.0", netmask: "255.255.0.0", dhcp_start: "172.17.0.10", dhcp_end: "172.17.0.254" }
+      - { name: "linux-net", bridge: "virbr3", subnet: "172.18.0.0", netmask: "255.255.0.0", dhcp_start: "172.18.0.10", dhcp_end: "172.18.0.254" }
+      - { name: "windows-net", bridge: "virbr4", subnet: "172.19.0.0", netmask: "255.255.0.0", dhcp_start: "172.19.0.10", dhcp_end: "172.19.0.254" }
+
+  tasks:
+    - name: Define network using XML
+      community.libvirt.virt_net:
+        name: "{{ item.name }}"
+        state: present
+        autostart: yes
+        xml: |
+          <network>
+            <name>{{ item.name }}</name>
+            <forward mode='nat'/>
+            <bridge name='{{ item.bridge }}' stp='on' delay='0'/>
+            <ip address='{{ item.subnet | ansible.utils.ipaddr("1") }}' netmask='{{ item.netmask }}'>
+              <dhcp>
+                <range start='{{ item.dhcp_start }}' end='{{ item.dhcp_end }}'/>
+              </dhcp>
+            </ip>
+          </network>
+      loop: "{{ lab_networks }}"
+      register: net_results
+
+    - name: Report created/updated networks
+      debug:
+        msg: "✅ Network {{ item.item.name }} is {{ 'newly created' if item.changed else 'already present' }}"
+      loop: "{{ net_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"

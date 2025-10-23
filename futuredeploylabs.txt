@@ -1,0 +1,6 @@
+---
+- import_playbook: deploy-vyos-vm.yml
+- import_playbook: deploy-linux-vm.yml
+- import_playbook: deploy-windows-vm.yml
+- import_playbook: deploy-k8s.yml
+- import_playbook: deploy-docker-compose.yml

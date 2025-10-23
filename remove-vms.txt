@@ -1,0 +1,16 @@
+# On your laptop
+virsh destroy docker-compose1
+virsh undefine docker-compose1 --remove-all-storage
+
+# For AAX server
+virsh destroy aax-server
+virsh undefine aax-server --remove-all-storage
+
+virsh destroy k8s-control
+virsh undefine k8s-control --remove-all-storage
+
+virsh destroy k8s-worker1
+virsh undefine k8s-worker1 --remove-all-storage
+
+virsh destroy k8s-worker2
+virsh undefine k8s-worker2 --remove-all-storage

@@ -1,0 +1,28 @@
+# Install Nord dircolors (for ls colors)
+git clone https://github.com/arcticicestudio/nord-dircolors.git ~/.nord-dircolors
+eval $(dircolors -b ~/.nord-dircolors/src/dir_colors)
+echo 'eval $(dircolors -b ~/.nord-dircolors/src/dir_colors)' >> ~/.bashrc
+
+# Simple Nord prompt
+cat << 'EOF' >> ~/.bashrc
+# Nord prompt colors
+NORD_DIMBLUE='\[\033[0;94m\]'   # lighter blue
+NORD_WHITE='\[\033[0;37m\]'
+NORD_CYAN='\[\033[0;36m\]'
+NORD_YELLOW='\[\033[0;33m\]'
+NORD_RESET='\[\033[0m\]'
+PS1="${NORD_DIMBLUE}\u${NORD_WHITE}@${NORD_CYAN}\h ${NORD_YELLOW}\w${NORD_RESET}\$ "
+EOF
+
+# Nord theme for Vim
+mkdir -p ~/.vim/colors
+curl -o ~/.vim/colors/nord.vim https://raw.githubusercontent.com/arcticicestudio/nord-vim/develop/colors/nord.vim
+echo -e "syntax on\ncolorscheme nord" >> ~/.vimrc
+
+# Reload
+source ~/.bashrc
+
+
+kubeadm join 172.17.0.107:6443 --token omlmps.tm58xyy2cnu8c4lm \
+	--discovery-token-ca-cert-hash sha256:2cd37a135ad13e5e31668707f860405424bef476f407826a6cead65375763fa2 
+

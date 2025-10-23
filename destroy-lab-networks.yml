@@ -1,0 +1,22 @@
+---
+- name: Destroy and undefine lab networks on KVM
+  hosts: laptop
+  become: yes
+  gather_facts: false
+  vars:
+    lab_networks:
+      - "lab-net"
+      - "k8s-net"
+      - "linux-net"
+      - "windows-net"
+
+  tasks:
+    - name: Destroy networks if running
+      command: "virsh net-destroy {{ item }}"
+      ignore_errors: yes
+      loop: "{{ lab_networks }}"
+
+    - name: Undefine networks
+      command: "virsh net-undefine {{ item }}"
+      ignore_errors: yes
+      loop: "{{ lab_networks }}"

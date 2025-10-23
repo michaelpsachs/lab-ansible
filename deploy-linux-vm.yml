@@ -1,0 +1,89 @@
+---
+- name: Deploy Linux VM
+  hosts: laptop
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Create cloud-init ISO for Linux VM
+      copy:
+        dest: "/tmp/user-data-{{ linux_vm.name }}"
+        content: |
+          #cloud-config
+          hostname: {{ linux_vm.name }}
+          users:
+            - name: {{ default_user }}
+              sudo: ALL=(ALL) NOPASSWD:ALL
+              ssh_authorized_keys:
+{% for key in ssh_public_keys %}
+                - {{ lookup('file', key) }}
+{% endfor %}
+
+          package_update: true
+          packages: [qemu-guest-agent, net-tools, curl]
+
+    - name: Create meta-data
+      copy:
+        dest: "/tmp/meta-data-{{ linux_vm.name }}"
+        content: |
+          instance-id: {{ linux_vm.name }}
+
+    - name: Build cloud-init ISO
+      command: >
+        genisoimage -output /tmp/cloud-init-{{ linux_vm.name }}.iso
+        -volid cidata -joliet -rock
+        /tmp/user-data-{{ linux_vm.name }}
+        /tmp/meta-data-{{ linux_vm.name }}
+      args:
+        creates: "/tmp/cloud-init-{{ linux_vm.name }}.iso"
+
+    - name: Create VM disk
+      command: "qemu-img create -f qcow2 /var/lib/libvirt/images/{{ linux_vm.name }}.qcow2 {{ linux_vm.disk }}"
+      args:
+        creates: "/var/lib/libvirt/images/{{ linux_vm.name }}.qcow2"
+
+    - name: Create Linux VM
+      shell: |
+        virt-install \
+          --name {{ linux_vm.name }} \
+          --ram {{ linux_vm.memory }} \
+          --vcpus {{ linux_vm.vcpus }} \
+          --disk path=/var/lib/libvirt/images/{{ linux_vm.name }}.qcow2,format=qcow2 \
+          --disk path=/tmp/cloud-init-{{ linux_vm.name }}.iso,device=cdrom \
+          --network network={{ linux_vm.network }} \
+          --os-variant ubuntu22.04 \
+          --import \
+          --noautoconsole
+
+    - name: Detect Linux VM IP
+      shell: "virsh domifaddr {{ linux_vm.name }} | awk '/ipv4/ {print $4}' | cut -d'/' -f1"
+      register: linux_vm_ip
+      retries: 10
+      delay: 10
+      until: linux_vm_ip.stdout != ''
+
+    - name: Add Linux VM to inventory
+      add_host:
+        name: "{{ linux_vm.name }}"
+        ansible_host: "{{ linux_vm_ip.stdout }}"
+        ansible_user: "{{ default_user }}"
+        ansible_ssh_private_key_file: "~/.ssh/id_ed25519"
+
+- name: Configure Linux VM
+  hosts: "{{ linux_vm.name }}"
+  become: yes
+  tasks:
+    - name: Update packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    - name: Install base tools
+      apt:
+        name:
+          - htop
+          - git
+          - curl
+          - net-tools
+        state: present
