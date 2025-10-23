@@ -10,7 +10,7 @@
       register: qcow2_file
 
     - name: Convert VHD to qcow2
-      ansible.builtin.command: qemu-img convert -f vpc -O qcow2 {{ vhd_path }} /var/lib/libvirt/images/{{ vm_name }}.qcow2
+      ansible.builtin.command: qemu-img convert -f vhdx -O qcow2 {{ vhd_path }} /var/lib/libvirt/images/{{ vm_name }}.qcow2
       when: not qcow2_file.stat.exists
       changed_when: true
 
