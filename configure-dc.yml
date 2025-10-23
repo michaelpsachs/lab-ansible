@@ -1,0 +1,58 @@
+---
+- name: Configure Windows Server as Domain Controller
+  hosts: "{{ vm_ip | default('172.19.0.1') }}"
+  gather_facts: false
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_user: Administrator
+    ansible_password: "{{ windows_admin_password }}"
+    ansible_winrm_transport: basic
+    ansible_winrm_server_cert_validation: ignore
+
+  tasks:
+    - name: Test WinRM connection
+      ansible.windows.win_ping:
+
+    - name: Set hostname to DC01
+      ansible.windows.win_hostname:
+        name: DC01
+      register: hostname_change
+
+    - name: Reboot after hostname change
+      ansible.windows.win_reboot:
+        reboot_timeout: 600
+      when: hostname_change.reboot_required
+
+    - name: Install AD Domain Services
+      ansible.windows.win_feature:
+        name: AD-Domain-Services
+        include_management_tools: true
+        state: present
+      register: adds_install
+
+    - name: Reboot after AD DS install
+      ansible.windows.win_reboot:
+        reboot_timeout: 600
+      when: adds_install.reboot_required
+
+    - name: Promote to Domain Controller
+      ansible.windows.win_domain:
+        dns_domain_name: "{{ domain_name }}"
+        domain_netbios_name: "{{ domain_netbios }}"
+        safe_mode_password: "{{ safe_mode_password }}"
+      register: dc_promotion
+
+    - name: Reboot after DC promotion
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      when: dc_promotion.reboot_required
+
+    - name: Verify Domain Controller
+      ansible.windows.win_shell: Get-ADDomainController | Select-Object Name,Domain,IPv4Address
+      register: dc_info
+      changed_when: false
+
+    - name: Display DC information
+      ansible.builtin.debug:
+        msg: "{{ dc_info.stdout_lines }}"
