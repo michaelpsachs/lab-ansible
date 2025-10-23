@@ -14,6 +14,21 @@
       when: not qcow2_file.stat.exists
       changed_when: true
 
+    - name: Install libguestfs-tools if not present
+      ansible.builtin.package:
+        name: libguestfs-tools
+        state: present
+
+    - name: Enable WinRM in the Windows image
+      ansible.builtin.shell: |
+        virt-customize -a /var/lib/libvirt/images/{{ vm_name }}.qcow2 \
+          --run-command 'powershell.exe Enable-PSRemoting -Force' \
+          --run-command 'powershell.exe Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true' \
+          --run-command 'powershell.exe Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true' \
+          --run-command 'powershell.exe Set-NetFirewallRule -Name "WINRM-HTTP-In-TCP" -Enabled True'
+      when: not qcow2_file.stat.exists
+      changed_when: true
+
     - name: Check if VM already exists
       ansible.builtin.command: virsh list --all --name
       register: vm_list
@@ -39,14 +54,15 @@
         name: "{{ vm_name }}"
         state: running
 
-    - name: Wait for VM to boot
-      ansible.builtin.pause:
-        seconds: 60
-        prompt: "Waiting for VM to boot..."
+    - name: Wait for Windows to boot and WinRM to be available
+      ansible.builtin.wait_for:
+        host: "{{ vm_ip }}"
+        port: 5985
+        delay: 60
+        timeout: 300
 
     - name: Show next steps
       ansible.builtin.debug:
         msg:
-          - "VM {{ vm_name }} is running"
-          - "Connect via VNC and enable WinRM in Windows"
-          - "Then run the configure-dc.yml playbook"
+          - "VM {{ vm_name }} is running with WinRM enabled"
+          - "Ready for DC configuration"
