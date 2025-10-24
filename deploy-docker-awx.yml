@@ -1,0 +1,278 @@
+---
+- name: Deploy Docker Compose VM with AWX
+  hosts: 192.168.1.99
+  become: true
+  vars:
+    vm_name: docker-compose1
+    default_user: mike
+    ssh_public_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+    static_ip: 172.16.0.10
+    static_gateway: 172.16.0.1
+    static_netmask: 255.255.0.0
+    vm_config:
+      memory: 8192
+      vcpus: 4
+      disk: 100G
+      network: lab-net
+
+  tasks:
+    - name: Create cloud-init user-data with static IP
+      ansible.builtin.copy:
+        dest: "/tmp/user-data-{{ vm_name }}"
+        mode: '0644'
+        content: |
+          #cloud-config
+          hostname: {{ vm_name }}
+          users:
+            - name: {{ default_user }}
+              sudo: ALL=(ALL) NOPASSWD:ALL
+              shell: /bin/bash
+              lock_passwd: true
+              ssh_authorized_keys:
+                - {{ ssh_public_key }}
+
+          package_update: true
+          packages:
+            - docker.io
+            - docker-compose
+            - python3-pip
+            - python3-docker
+            - curl
+            - git
+            - htop
+            - vim
+
+          runcmd:
+            - systemctl enable docker
+            - systemctl start docker
+            - usermod -aG docker {{ default_user }}
+            - mkdir -p /opt/awx/{postgres,projects,redis}
+            - chown -R {{ default_user }}:{{ default_user }} /opt/awx
+
+    - name: Create cloud-init meta-data
+      ansible.builtin.copy:
+        dest: "/tmp/meta-data-{{ vm_name }}"
+        mode: '0644'
+        content: |
+          instance-id: {{ vm_name }}-{{ ansible_date_time.epoch }}
+          local-hostname: {{ vm_name }}
+
+    - name: Create cloud-init network-config with static IP
+      ansible.builtin.copy:
+        dest: "/tmp/network-config-{{ vm_name }}"
+        mode: '0644'
+        content: |
+          version: 2
+          ethernets:
+            enp1s0:
+              addresses:
+                - {{ static_ip }}/16
+              routes:
+                - to: default
+                  via: {{ static_gateway }}
+              nameservers:
+                addresses:
+                  - {{ static_gateway }}
+                  - 8.8.8.8
+
+    - name: Create cloud-init seed disk
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          rm -f /tmp/cloud-init-{{ vm_name }}.img
+          cloud-localds /tmp/cloud-init-{{ vm_name }}.img \
+            /tmp/user-data-{{ vm_name }} \
+            /tmp/meta-data-{{ vm_name }} \
+            --network-config=/tmp/network-config-{{ vm_name }}
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Download Ubuntu cloud image if not present
+      ansible.builtin.get_url:
+        url: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+        dest: /tmp/ubuntu-22.04-cloudimg.img
+        mode: '0644'
+
+    - name: Remove old VM if it exists
+      ansible.builtin.shell:
+        cmd: |
+          virsh destroy {{ vm_name }} 2>/dev/null || true
+          virsh undefine {{ vm_name }} --remove-all-storage 2>/dev/null || true
+      changed_when: false
+      failed_when: false
+
+    - name: Create VM disk from cloud image
+      ansible.builtin.command:
+        cmd: cp /tmp/ubuntu-22.04-cloudimg.img /var/lib/libvirt/images/{{ vm_name }}.qcow2
+      changed_when: true
+
+    - name: Resize VM disk
+      ansible.builtin.command:
+        cmd: qemu-img resize /var/lib/libvirt/images/{{ vm_name }}.qcow2 {{ vm_config.disk }}
+      changed_when: true
+
+    - name: Create Docker Compose VM
+      ansible.builtin.shell:
+        cmd: |
+          virt-install \
+            --name {{ vm_name }} \
+            --ram {{ vm_config.memory }} \
+            --vcpus {{ vm_config.vcpus }} \
+            --disk path=/var/lib/libvirt/images/{{ vm_name }}.qcow2,format=qcow2,bus=virtio \
+            --disk path=/tmp/cloud-init-{{ vm_name }}.img,device=disk,bus=virtio \
+            --network network={{ vm_config.network }},model=virtio \
+            --os-variant ubuntu22.04 \
+            --graphics none \
+            --import \
+            --noautoconsole
+      changed_when: true
+
+    - name: Wait for VM to boot
+      ansible.builtin.pause:
+        seconds: 60
+
+    - name: Wait for SSH to be available
+      ansible.builtin.wait_for:
+        host: "{{ static_ip }}"
+        port: 22
+        delay: 10
+        timeout: 300
+
+- name: Deploy AWX on Docker Compose
+  hosts: 172.16.0.10
+  vars:
+    ansible_user: mike
+    awx_base_dir: /opt/awx
+    awx_version: "24.6.1"
+    
+  tasks:
+    - name: Wait for cloud-init to complete
+      ansible.builtin.command:
+        cmd: cloud-init status --wait
+      changed_when: false
+
+    - name: Create AWX docker-compose file
+      ansible.builtin.copy:
+        dest: "{{ awx_base_dir }}/docker-compose.yml"
+        mode: '0644'
+        content: |
+          version: '3.8'
+          services:
+            postgres:
+              image: postgres:15
+              container_name: awx_postgres
+              restart: unless-stopped
+              environment:
+                POSTGRES_USER: awx
+                POSTGRES_PASSWORD: awxpass
+                POSTGRES_DB: awx
+                PGDATA: /var/lib/postgresql/data/pgdata
+              volumes:
+                - ./postgres:/var/lib/postgresql/data:rw
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U awx"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+            redis:
+              image: redis:7
+              container_name: awx_redis
+              restart: unless-stopped
+              command: redis-server --appendonly yes
+              volumes:
+                - ./redis:/data:rw
+
+            awx_web:
+              image: ansible/awx:{{ awx_version }}
+              container_name: awx_web
+              hostname: awxweb
+              user: root
+              restart: unless-stopped
+              ports:
+                - "8080:8052"
+              environment:
+                SECRET_KEY: awxsecretkey123
+                DATABASE_USER: awx
+                DATABASE_PASSWORD: awxpass
+                DATABASE_NAME: awx
+                DATABASE_PORT: 5432
+                DATABASE_HOST: postgres
+                REDIS_HOST: redis
+              volumes:
+                - ./projects:/var/lib/awx/projects:rw
+              depends_on:
+                postgres:
+                  condition: service_healthy
+                redis:
+                  condition: service_started
+
+            awx_task:
+              image: ansible/awx:{{ awx_version }}
+              container_name: awx_task
+              hostname: awx
+              user: root
+              restart: unless-stopped
+              environment:
+                SECRET_KEY: awxsecretkey123
+                DATABASE_USER: awx
+                DATABASE_PASSWORD: awxpass
+                DATABASE_NAME: awx
+                DATABASE_PORT: 5432
+                DATABASE_HOST: postgres
+                REDIS_HOST: redis
+                AWX_ADMIN_USER: admin
+                AWX_ADMIN_PASSWORD: adminpass
+              volumes:
+                - ./projects:/var/lib/awx/projects:rw
+              depends_on:
+                postgres:
+                  condition: service_healthy
+                redis:
+                  condition: service_started
+                awx_web:
+                  condition: service_started
+
+    - name: Set correct permissions on AWX directories
+      ansible.builtin.file:
+        path: "{{ awx_base_dir }}/{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+        recurse: true
+      loop:
+        - postgres
+        - projects
+        - redis
+
+    - name: Start AWX with docker-compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ awx_base_dir }}"
+        state: present
+      register: awx_compose
+
+    - name: Wait for AWX to initialize
+      ansible.builtin.pause:
+        seconds: 120
+        prompt: "Waiting for AWX initialization..."
+
+    - name: Check AWX container status
+      ansible.builtin.command:
+        cmd: docker ps
+      register: docker_ps
+      changed_when: false
+
+    - name: Display deployment info
+      ansible.builtin.debug:
+        msg:
+          - "✅ AWX deployed successfully!"
+          - "📍 Static IP: 172.16.0.10"
+          - "🌐 AWX URL: http://172.16.0.10:8080"
+          - "👤 Username: admin"
+          - "🔑 Password: adminpass"
+          - "💾 Data stored in: /opt/awx/"
+          - "🔌 SSH: ssh mike@172.16.0.10"
+          - ""
+          - "Container Status:"
+          - "{{ docker_ps.stdout_lines }}"
