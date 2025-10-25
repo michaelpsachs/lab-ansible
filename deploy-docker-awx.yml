@@ -34,7 +34,7 @@
           package_update: true
           packages:
             - docker.io
-            - docker-compose
+            - docker-compose-plugin
             - python3-pip
             - python3-docker
             - curl
