@@ -1,0 +1,189 @@
+========== FILE: k3s-cluster/site.yml ==========
+---
+- import_playbook: playbooks/k3s-install.yml
+- import_playbook: playbooks/awx-deploy.yml
+
+========== FILE: k3s-cluster/ansible.cfg ==========
+[defaults]
+inventory = ./inventory.ini
+roles_path = ./roles
+host_key_checking = False
+retry_files_enabled = False
+deprecation_warnings = False
+timeout = 30
+
+========== FILE: k3s-cluster/group_vars/all.yml ==========
+ansible_user: mike
+ansible_become: true
+
+# Networking
+k3s_master_ip: 172.20.0.10
+k3s_worker_ips:
+  - 172.20.0.11
+  - 172.20.0.12
+
+# Paths
+k3s_token_file: ./files/k3s_token.txt
+
+========== FILE: k3s-cluster/inventory.ini ==========
+[k3s-master]
+172.20.0.10 ansible_user=mike
+
+[k3s-workers]
+172.20.0.11 ansible_user=mike
+172.20.0.12 ansible_user=mike
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+k3s_token_file=./files/k3s_token.txt
+k3s_master_ip=172.20.0.10
+
+
+========== FILE: k3s-cluster/k3s-cluster-dump.txt ==========
+
+========== FILE: k3s-cluster/roles/k3s-master/tasks/main.yml ==========
+---
+- name: Ensure dependencies are present
+  become: true
+  ansible.builtin.package:
+    name:
+      - curl
+      - iptables
+      - ca-certificates
+    state: present
+
+- name: Download K3s installer script
+  become: true
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/bin/install_k3s.sh
+    mode: '0755'
+
+- name: Check if K3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_installed
+
+- name: Run K3s install script for master
+  become: true
+  ansible.builtin.script:
+    cmd: /usr/local/bin/install_k3s.sh
+  environment:
+    INSTALL_K3S_EXEC: "server --node-ip={{ k3s_master_ip }}"
+  when: not k3s_installed.stat.exists
+
+- name: Retrieve K3s join token
+  become: true
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token
+
+- name: Save token locally for workers
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ k3s_token.content | b64decode }}"
+    dest: "{{ k3s_token_file }}"
+    mode: '0600'
+
+========== FILE: k3s-cluster/roles/k3s-worker/tasks/main.yml ==========
+---
+- name: Ensure dependencies are present
+  become: true
+  ansible.builtin.package:
+    name:
+      - curl
+      - iptables
+      - ca-certificates
+    state: present
+
+- name: Download K3s installer script
+  become: true
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/bin/install_k3s.sh
+    mode: '0755'
+
+- name: Check if K3s agent is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s-agent
+  register: k3s_agent_installed
+
+- name: Read K3s token from local file
+  delegate_to: localhost
+  ansible.builtin.slurp:
+    src: "{{ k3s_token_file }}"
+  register: tokenfile
+
+- name: Run K3s install script for worker
+  become: true
+  ansible.builtin.script:
+    cmd: /usr/local/bin/install_k3s.sh
+  environment:
+    K3S_URL: "https://{{ k3s_master_ip }}:6443"
+    K3S_TOKEN: "{{ tokenfile.content | b64decode }}"
+  when: not k3s_agent_installed.stat.exists
+
+========== FILE: k3s-cluster/roles/common/tasks/main.yml ==========
+---
+- name: Ensure base packages
+  become: true
+  package:
+    name:
+      - curl
+      - python3
+      - iptables
+      - ca-certificates
+    state: present
+
+- name: Disable swap (K3s requirement)
+  become: true
+  command: swapoff -a
+  when: ansible_swaptotal_mb | int > 0
+
+- name: Comment out swap in /etc/fstab
+  become: true
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*swap)'
+    replace: '# \1'
+
+========== FILE: k3s-cluster/roles/awx/tasks/main.yml ==========
+- name: Create AWX namespace
+  shell: kubectl create namespace {{ awx_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+- name: Install AWX Operator
+  shell: kubectl apply -f https://github.com/ansible/awx-operator/releases/{{ awx_version }}/download/awx-operator.yaml
+
+- name: Deploy AWX instance
+  copy:
+    dest: /tmp/awx.yaml
+    content: |
+      apiVersion: awx.ansible.com/v1beta1
+      kind: AWX
+      metadata:
+        name: awx
+        namespace: {{ awx_namespace }}
+      spec:
+        service_type: NodePort
+        nodeport_port: 30080
+
+- name: Apply AWX manifest
+  shell: kubectl apply -f /tmp/awx.yaml
+
+========== FILE: k3s-cluster/playbooks/awx-deploy.yml ==========
+---
+- name: Deploy AWX on K3s
+  hosts: k3s-master
+  become: yes
+  roles:
+    - awx
+
+========== FILE: k3s-cluster/playbooks/k3s-install.yml ==========
+---
+- name: Install K3s master and workers
+  hosts: all
+  become: true
+  roles:
+    - { role: k3s-master, when: "'k3s-master' in group_names" }
+    - { role: k3s-worker, when: "'k3s-workers' in group_names" }
+

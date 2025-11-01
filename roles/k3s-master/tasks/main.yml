@@ -1,0 +1,42 @@
+---
+- name: Ensure dependencies are present
+  become: true
+  ansible.builtin.package:
+    name:
+      - curl
+      - iptables
+      - ca-certificates
+    state: present
+
+- name: Download K3s installer script
+  become: true
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/bin/install_k3s.sh
+    mode: '0755'
+
+- name: Check if K3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_installed
+
+- name: Run K3s install script for master
+  become: true
+  ansible.builtin.command:
+    cmd: /usr/local/bin/install_k3s.sh
+  environment:
+    INSTALL_K3S_EXEC: "server --node-ip={{ k3s_master_ip }}"
+  when: not k3s_installed.stat.exists
+
+- name: Retrieve K3s join token
+  become: true
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token
+
+- name: Save token locally for workers
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ k3s_token.content | b64decode }}"
+    dest: "{{ k3s_token_file }}"
+    mode: '0600'

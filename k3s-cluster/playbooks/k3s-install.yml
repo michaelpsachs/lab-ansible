@@ -1,0 +1,7 @@
+---
+- name: Install K3s master and workers
+  hosts: all
+  become: true
+  roles:
+    - { role: k3s-master, when: "'k3s-master' in group_names" }
+    - { role: k3s-worker, when: "'k3s-workers' in group_names" }

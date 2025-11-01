@@ -1,0 +1,11 @@
+ansible_user: mike
+ansible_become: true
+
+# Networking
+k3s_master_ip: 172.20.0.10
+k3s_worker_ips:
+  - 172.20.0.11
+  - 172.20.0.12
+
+# Paths
+k3s_token_file: ./files/k3s_token.txt
