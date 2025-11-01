@@ -1,6 +1,0 @@
----
-- name: Deploy AWX on K3s
-  hosts: k3s-master
-  become: true
-  roles:
-    - awx

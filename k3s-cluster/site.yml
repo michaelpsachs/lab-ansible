@@ -1,6 +1,0 @@
----
-- name: Install K3s cluster
-  import_playbook: playbooks/k3s-install.yml
-
-- name: Deploy AWX to cluster
-  import_playbook: playbooks/awx-deploy.yml
